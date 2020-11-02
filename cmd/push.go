@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,35 +42,29 @@ import (
 // 	Streams []promtailStream `json:"streams"`
 // }
 
-var wg sync.WaitGroup
+var finishedRequest = make(chan time.Duration, 100000)
+var badRequest = make(chan time.Duration, 100000)
+
+// var finishedRequest chan time.Duration
+// var badRequest  chan time.Duration
 
 // pushCmd represents the push command
 var pushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "push logs to loki",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long:  `----------help----------------`,
 	Run: func(cmd *cobra.Command, args []string) {
+		startTime := time.Now()
 		key, _ := cmd.Flags().GetString("key")
 		value, _ := cmd.Flags().GetString("value")
-		//size, _ := cmd.Flags().GetInt("size")
-		fre, _ := cmd.Flags().GetInt("frequency")
-		number, _ := cmd.Flags().GetInt("number")
-		// fmt.Println(number)
-		// fmt.Printf("%v = %v", key, value)
-		// fmt.Println(fre)
-		wg.Add(number)
-		for i := 1; i <= number; i++ {
-			//fmt.Println(i)
-			//time.Sleep(time.Second)
-			go pushLogs(key, value, fre, i)
-		}
-		//time.Sleep(time.Duration(1) * time.Hour)
-		wg.Wait()
+		task, _ := cmd.Flags().GetInt("task")
+		//fre, _ := cmd.Flags().GetInt("frequency")
+		max, _ := cmd.Flags().GetInt("max")
+		fmt.Printf("\nPush %v logs to loki with max concurrent tasks = %v\n", task, max)
+		//fmt.Printf("\nbegin to send logs\n")
+		costTime := sendLogs(key, value, task, max)
+		//fmt.Printf("\nresults is as followed\n")
+		calculate(startTime, costTime)
 	},
 }
 
@@ -78,9 +72,9 @@ func init() {
 	rootCmd.AddCommand(pushCmd)
 	pushCmd.PersistentFlags().StringP("key", "k", "app", "key of label")
 	pushCmd.PersistentFlags().StringP("value", "v", "server", "value of label")
-	pushCmd.PersistentFlags().IntP("size", "s", 0, "size of logs")
-	pushCmd.PersistentFlags().IntP("frequency", "p", 1, "send a log every p seconds")
-	pushCmd.PersistentFlags().IntP("number", "n", 2, "the number of clients sending logs")
+	pushCmd.PersistentFlags().IntP("task", "t", 1000, "number of logs")
+	//pushCmd.PersistentFlags().IntP("frequency", "p", 1, "send a log every p seconds")
+	pushCmd.PersistentFlags().IntP("max", "m", 10, "Maximum of concurrent task")
 
 	// Here you will define your flags and configuration settings.
 
@@ -93,52 +87,48 @@ func init() {
 	// pushCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-// key: key of label
-// value: value of label
-// fre: send logs every fre seconds every client
-// i： client i
+/*
+input：
+	key: key of label
+	value: value of label
+	task：number of logs;
+	max: Maximum of concurrent task
+output：
+	endtime
+*/
+func sendLogs(key, value string, task, max int) time.Duration {
+	//统一了推送日志的时间
+	postTime := time.Now().UnixNano() // 纳秒
+	logTime := strconv.FormatInt(int64(postTime), 10)
+	//记录执行发送第一条请求前的时间
+	startTime := time.Now()
 
-func pushLogs(key string, value string, fre int, i int) {
-	for {
-		//fmt.Printf("push %v\n", i)
-		send(key, value, i)
-		fmt.Printf("client %v send a log-------\n", i)
-
-		time.Sleep(time.Second * time.Duration(fre))
+	channel := make(chan int, max) //控制协程最大数
+	for i := 0; i < task; i++ {
+		channel <- 1
+		go send(key, value, i, channel, logTime)
 	}
-	wg.Done()
+	for {
+		if len(channel) == 0 {
+			return time.Now().Sub(startTime)
+		}
+	}
 }
 
-// key: key of label
-// value: value of label
-// i： client i
-func send(key string, value string, i int) {
-	//json
-	// logs := "test for push"
-	// var values [1][2]string = [1][2]string{
-	// 	{t, logs},
-	// }
-	// var label = "{\"app\" :\"server\"}"
-	// //fmt.Println(label)
-	// var streams []promtailStream
-	// streams = append(streams, promtailStream{
-	// 	Labels: label,
-	// 	Values: values,
-	// })
-	// msg := promtailMsg{
-	// 	Streams: streams,
-	// }
-	// jsonString, _ := json.Marshal(msg)
-	// //fmt.Println(jsonString)
-	// fmt.Println(string(jsonString))
-	time := time.Now().Unix()
-	t := strconv.FormatInt(int64(time), 10) + "000000000"
-	url := "http://localhost:31001/loki/api/v1/push"
-	logs := "client " + strconv.FormatInt(int64(i), 10) + " : test for log"
-	test := "{\"streams\":[{\"stream\":{\"" + key + "\":\"" + value + "\"},\"values\":[[\"" + t + "\",\"" + logs + "\"]]}]}"
-	//fmt.Println(test)
-	// var jsonstr = []byte(test)
-	// buffer := bytes.NewBuffer(jsonstr)
+/*
+	key: key of label
+	value: value of label
+	i：index of logs;
+	channel: chan of task
+	t: current time
+*/
+func send(key string, value string, i int, channel chan int, logTime string) {
+	// time := time.Now().UnixNano() // 纳秒
+	// t := strconv.FormatInt(int64(time), 10)
+	url := "http://localhost:31000/loki/api/v1/push"
+	logs := "line " + strconv.FormatInt(int64(i), 10) + " : test for log"
+	//请求内容符合loki http api要求
+	test := "{\"streams\":[{\"stream\":{\"" + key + "\":\"" + value + "\"},\"values\":[[\"" + logTime + "\",\"" + logs + "\"]]}]}"
 	request, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(test)))
 	if err != nil {
 		fmt.Printf(" request err: http.NewRequest%v", err)
@@ -146,21 +136,28 @@ func send(key string, value string, i int) {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client := http.Client{}
+	startTime := time.Now()
 	resp, err := client.Do(request.WithContext(context.TODO())) //发送请求
+	costTime := time.Now().Sub(startTime)
+	//fmt.Println(costTime)
+	// 如果请求成功，将耗费时间传入finishedRequest通道，否则传入badRequest通道
+	defer resp.Body.Close()
 	if err != nil {
 		fmt.Printf("client.Do%v", err)
+		badRequest <- costTime
+	} else {
+		finishedRequest <- costTime
 	}
 	respBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Printf("ioutil.ReadAll%v", err)
 	}
 	fmt.Print(string(respBytes))
-
+	<-channel //表示该协程已经结束
 	// res, err := http.Post(url, header, bytes.NewBuffer([]byte(test)))
 	// if err != nil {
 	// 	fmt.Println("Fatal error ", err.Error())
 	// }
-	// defer res.Body.Close()
 	// content, err := ioutil.ReadAll(res.Body)
 	// if err != nil {
 	// 	fmt.Println("Fatal error ", err.Error())
@@ -170,3 +167,54 @@ func send(key string, value string, i int) {
 	// fmt.Println(*str)
 
 }
+
+func calculate(startTime time.Time, costTime time.Duration) {
+	var times = []time.Duration{}
+	fmt.Printf("\nFinished requests:\t%v\nFailed requests:\t%v\n\n", len(finishedRequest), len(badRequest))
+	//fmt.Println(len(finishedRequest))
+	close(finishedRequest)
+	for i := range finishedRequest {
+		times = append(times, i)
+	}
+	//fmt.Println(len(times))
+	sort.Slice(times, func(i, j int) bool {
+		return times[i] < times[j]
+	})
+	var sumTime time.Duration
+	for i := range times {
+		//fmt.Println(times[i])
+		sumTime += times[i]
+	}
+	//fmt.Printf("\ncostTime for all requests: %v\n", costTime)
+	count := time.Duration(len(times)) * time.Nanosecond
+	meanTimes := sumTime / count
+	meanTimesCurrentTask := costTime / count
+	fmt.Printf("Time per request:\t%v (mean)\n", meanTimes)
+	fmt.Printf("Time per request:\t%v (mean,across all concurrent requests)\n\n", meanTimesCurrentTask)
+	//fmt.Printf("Requests per second:\t%v", int64(time.Second / times[1]))
+	//fmt.Print(times[0])
+	fmt.Println("Percentage of the requests served within a certain time:")
+	for i := 50; i < 100; i = i + 10 {
+		j := i * len(times) / 100
+		fmt.Printf("%v%%\t%v\n", i, times[j-1])
+	}
+	fmt.Printf("%v%%\t%v\n", 95, times[95*len(times)/100-1])
+	fmt.Printf("%v%%\t%v\n", 99, times[99*len(times)/100-1])
+	fmt.Printf("%v%%\t%v(longest request)\n", 100, times[len(times)-1])
+
+	fmt.Printf("\ntotal time for test:\t%v\n\n", time.Now().Sub(startTime))
+}
+
+// func pushLogs(key string, value string, fre int, i int) {
+// 	for {
+// 		//fmt.Printf("push %v\n", i)
+// 		//send(key, value, i)
+// 		fmt.Printf("client %v send a log-------\n", i)
+// 		time.Sleep(time.Second * time.Duration(fre))
+// 	}
+// 	// wg.Done()
+// }
+
+// key: key of label
+// value: value of label
+// i： client i
