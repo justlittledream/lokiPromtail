@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,11 +43,12 @@ import (
 // 	Streams []promtailStream `json:"streams"`
 // }
 
-var finishedRequest = make(chan time.Duration, 100000)
-var badRequest = make(chan time.Duration, 100000)
+//var finishedRequest = make(chan time.Duration, 100000)
+//var badRequest = make(chan time.Duration, 100000)
 
-// var finishedRequest chan time.Duration
-// var badRequest  chan time.Duration
+var finishedRequest = make(map[int]time.Duration)
+var badRequest = make(map[int]time.Duration)
+var lock sync.Mutex
 
 // pushCmd represents the push command
 var pushCmd = &cobra.Command{
@@ -97,7 +99,7 @@ output：
 	endtime
 */
 func sendLogs(key, value string, task, max int) time.Duration {
-	//统一了推送日志的时间
+	//统一了推送日志流的时间
 	postTime := time.Now().UnixNano() // 纳秒
 	logTime := strconv.FormatInt(int64(postTime), 10)
 	//记录执行发送第一条请求前的时间
@@ -144,9 +146,11 @@ func send(key string, value string, i int, channel chan int, logTime string) {
 	defer resp.Body.Close()
 	if err != nil {
 		fmt.Printf("client.Do%v", err)
-		badRequest <- costTime
+		badRequest[i] = costTime
+		//badRequest <- costTime
 	} else {
-		finishedRequest <- costTime
+		//finishedRequest <- costTime
+		finishedRequest[i] = costTime
 	}
 	respBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -172,9 +176,9 @@ func calculate(startTime time.Time, costTime time.Duration) {
 	var times = []time.Duration{}
 	fmt.Printf("\nFinished requests:\t%v\nFailed requests:\t%v\n\n", len(finishedRequest), len(badRequest))
 	//fmt.Println(len(finishedRequest))
-	close(finishedRequest)
+	//close(finishedRequest)
 	for i := range finishedRequest {
-		times = append(times, i)
+		times = append(times, finishedRequest[i])
 	}
 	//fmt.Println(len(times))
 	sort.Slice(times, func(i, j int) bool {
@@ -203,6 +207,10 @@ func calculate(startTime time.Time, costTime time.Duration) {
 	fmt.Printf("%v%%\t%v(longest request)\n", 100, times[len(times)-1])
 
 	fmt.Printf("\ntotal time for test:\t%v\n\n", time.Now().Sub(startTime))
+}
+
+func addTime(request map[int]time.Duration, t time.Duration) {
+
 }
 
 // func pushLogs(key string, value string, fre int, i int) {
