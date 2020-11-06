@@ -27,10 +27,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//var finishedRequest = make(chan time.Duration, 100000)
-//var badRequest = make(chan time.Duration, 100000)
-// var finishedRequest = make(map[int]time.Duration)
-// var badRequest = make(map[int]time.Duration)
 var finishedRequest = make([]int, 60001)
 var badRequest = make([]int, 60001)
 var requestCount = 0
@@ -203,7 +199,9 @@ func calculate(costTime time.Duration) {
 	//fmt.Println(costTime)
 	meanTimesCurrentTask := (float64(costTime/time.Millisecond) + 1) / float64(count)
 	fmt.Printf("Time per request:\t%vms (mean)\n", meanTimes)
-	fmt.Printf("Time per request:\t%vms (mean,across all concurrent requests)\n\n", meanTimesCurrentTask)
+	fmt.Printf("Time per request:\t%vms (mean,across all concurrent requests)\n", meanTimesCurrentTask)
+	qps, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", 1000/meanTimesCurrentTask), 64)
+	fmt.Printf("Requests per second:\t%v\n\n", qps)
 	//fmt.Printf("Requests per second:\t%v", int64(time.Second / times[1]))
 	//fmt.Print(times[0])
 	var index = 0
@@ -299,7 +297,6 @@ func createHTTPClient() http.Client {
 			// MaxIdleConnsPerHost: MaxIdleConnsPerHost,
 			// IdleConnTimeout:     time.Duration(IdleConnTimeout) * time.Second,
 		},
-
 		Timeout: 20 * time.Second,
 	}
 	return client
