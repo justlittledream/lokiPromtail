@@ -33,17 +33,22 @@ import (
 // var badRequest = make(map[int]time.Duration)
 var finishedRequest = make([]int, 60001)
 var badRequest = make([]int, 60001)
+var requestCount = 0
 
-// var pushChan = make(chan int, 1)
-//var count = 0
+var waitgroup sync.WaitGroup
 var lock sync.Mutex
+
+type ClientConfig struct {
+	PushURL string
+	Stream  *bytes.Buffer
+}
 
 // pushCmd represents the push command
 var pushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "push logs to loki",
 	Long: `----------help----------------
-	example 
+	example: ./main push -u http://192.168.88.171:31000/loki/api/v1/push -t 1000 -m 1 -k app -v nginx-deployment
 	`,
 	Run: func(cmd *cobra.Command, args []string) {
 		startTime := time.Now()
@@ -51,12 +56,9 @@ var pushCmd = &cobra.Command{
 		key, _ := cmd.Flags().GetString("key")
 		value, _ := cmd.Flags().GetString("value")
 		task, _ := cmd.Flags().GetInt("task")
-		//fre, _ := cmd.Flags().GetInt("frequency")
 		max, _ := cmd.Flags().GetInt("max")
 		fmt.Printf("\nPush %v logs to loki with max concurrent tasks = %v\n", task, max)
-		//fmt.Printf("\nbegin to send logs\n")
 		costTime := sendLogs(url, key, value, task, max)
-		//fmt.Printf("\nresults is as followed\n")
 		calculate(costTime)
 		fmt.Printf("\ntotal time for test:\t%v\n\n", time.Now().Sub(startTime))
 	},
@@ -92,21 +94,35 @@ output：
 	endtime
 */
 func sendLogs(url, key, value string, task, max int) time.Duration {
-	//统一了推送日志流的时间
-	postTime := time.Now().UnixNano() // 纳秒
-	logTime := strconv.FormatInt(int64(postTime), 10)
-	//记录执行发送第一条请求前的时间
-	startTime := time.Now()
-	//fmt.Printf("\n %v  %v", task, max)
-	channel := make(chan int, max) //控制协程最大数
+	postTime := time.Now().UnixNano()                 // 纳秒
+	logTime := strconv.FormatInt(int64(postTime), 10) //统一了推送日志流的时间
+	startTime := time.Now()                           //记录执行发送第一条请求前的时间
+	channel := make(chan http.Client, max)            //控制协程最大数
+	defer func() {
+		close(channel)
+	}()
+	var clientCount = 0
+	waitgroup.Add(task)
 	for i := 0; i < task; i++ {
-		go send(url, key, value, i, channel, logTime)
-	}
-	for {
-		if len(channel) == 0 {
-			return time.Now().Sub(startTime) //返回完成全部请求所用的时间
+		//符合loki http api要求的请求流，label为key=value，时间统一=logTime，日志=logs，只有i不同
+		logs := "line " + strconv.FormatInt(int64(i), 10) + " : test for log"
+		text := "{\"streams\":[{\"stream\":{\"" + key + "\":\"" + value + "\"},\"values\":[[\"" + logTime + "\",\"" + logs + "\"]]}]}"
+		conf := ClientConfig{
+			PushURL: url,
+			Stream:  bytes.NewBuffer([]byte(text)),
 		}
+
+		//无空余连接，如果总量小于最大值，创建新的连接
+		if len(channel) == 0 && clientCount < max {
+			clientCount++
+			fmt.Println(clientCount)
+			var client = http.Client{}
+			channel <- client
+		}
+		go send(conf, channel)
 	}
+	waitgroup.Wait()
+	return time.Now().Sub(startTime)
 }
 
 /*
@@ -116,20 +132,19 @@ func sendLogs(url, key, value string, task, max int) time.Duration {
 	channel: chan of task
 	t: current time
 */
-func send(url string, key string, value string, i int, channel chan int, logTime string) {
-	channel <- 1
-	defer func() { <-channel }()
+func send(conf ClientConfig, channel chan http.Client) {
+	client := <-channel
+	defer func() {
+		channel <- client
+		waitgroup.Done()
+	}()
 	//url := "http://localhost:31000/loki/api/v1/push"
-	logs := "line " + strconv.FormatInt(int64(i), 10) + " : test for log"
-	//请求内容符合loki http api要求
-	test := "{\"streams\":[{\"stream\":{\"" + key + "\":\"" + value + "\"},\"values\":[[\"" + logTime + "\",\"" + logs + "\"]]}]}"
-	request, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(test)))
+	request, err := http.NewRequest("POST", conf.PushURL, conf.Stream)
 	if err != nil {
 		fmt.Printf(" request err: http.NewRequest%v", err)
 
 	}
 	request.Header.Set("Content-Type", "application/json")
-	client := http.Client{}
 	startTime := time.Now()
 	resp, err := client.Do(request) //发送请求
 	costTime := time.Now().Sub(startTime)
@@ -143,7 +158,7 @@ func send(url string, key string, value string, i int, channel chan int, logTime
 		//finishedRequest <- costTime
 		addTime(finishedRequest, index)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	respBytes, err := ioutil.ReadAll(resp.Body)
 
 	if err != nil {
@@ -152,6 +167,7 @@ func send(url string, key string, value string, i int, channel chan int, logTime
 	if string(respBytes) != "" {
 		fmt.Println(string(respBytes))
 	}
+	//return resp
 }
 
 func calculate(costTime time.Duration) {
