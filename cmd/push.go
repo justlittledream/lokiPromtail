@@ -18,7 +18,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -37,6 +37,12 @@ var requestCount = 0
 
 var waitgroup sync.WaitGroup
 var lock sync.Mutex
+
+// const (
+// 	MaxIdleConns        int = 30
+// 	MaxIdleConnsPerHost int = 30
+// 	IdleConnTimeout     int = 30
+// )
 
 type ClientConfig struct {
 	PushURL string
@@ -115,8 +121,8 @@ func sendLogs(url, key, value string, task, max int) time.Duration {
 		//无空余连接，如果总量小于最大值，创建新的连接
 		if len(channel) == 0 && clientCount < max {
 			clientCount++
-			fmt.Println(clientCount)
-			var client = http.Client{}
+			//fmt.Println(clientCount)
+			client := createHTTPClient()
 			channel <- client
 		}
 		go send(conf, channel)
@@ -152,21 +158,26 @@ func send(conf ClientConfig, channel chan http.Client) {
 	//fmt.Printf("costTime: %v   Index: %v\n", costTime, index)
 	if err != nil {
 		fmt.Printf("client.Do%v", err)
-		addTime(badRequest, index)
+
 		//badRequest <- costTime
-	} else {
+	}
+
+	if resp.StatusCode != 204 {
 		//finishedRequest <- costTime
+		addTime(badRequest, index)
+	} else {
 		addTime(finishedRequest, index)
 	}
-	defer resp.Body.Close()
-	respBytes, err := ioutil.ReadAll(resp.Body)
 
-	if err != nil {
-		fmt.Printf("ioutil.ReadAll%v", err)
-	}
-	if string(respBytes) != "" {
-		fmt.Println(string(respBytes))
-	}
+	defer resp.Body.Close()
+	// respBytes, err := ioutil.ReadAll(resp.Body)
+
+	// if err != nil {
+	// 	fmt.Printf("ioutil.ReadAll%v", err)
+	// }
+	// if string(respBytes) != "" {
+	// 	fmt.Println(string(respBytes))
+	// }
 	//return resp
 }
 
@@ -274,4 +285,22 @@ func printOut(output map[int]int) {
 	fmt.Printf("%v%%\t%v\n", 95, output[95])
 	fmt.Printf("%v%%\t%v\n", 99, output[99])
 	fmt.Printf("%v%%\t%v\n", 100, output[100])
+}
+
+func createHTTPClient() http.Client {
+	client := http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			// MaxIdleConns:        MaxIdleConns,
+			// MaxIdleConnsPerHost: MaxIdleConnsPerHost,
+			// IdleConnTimeout:     time.Duration(IdleConnTimeout) * time.Second,
+		},
+
+		Timeout: 20 * time.Second,
+	}
+	return client
 }
